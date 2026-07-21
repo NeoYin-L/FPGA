@@ -9,23 +9,24 @@
 //   ec11_encoder             - giai ma xoay + nut nhan Encoder EC11
 //   rng_threshold_editor      - logic chinh nguong canh bao Rng
 //   threshold_led             - so sanh Rtd voi Rng, xuat 3 den canh bao
-//   oled_ssd1306_display      - hien thi Uđo1, Uđo2, Rtd len OLED
+//   oled_ssd1306_display      - hien thi Uđo1, Uđo2, Rtd, Rng len OLED
 //
-// *** GHI CHU CON THIEU (viec lam sau, khong chan tien do): man OLED HIEN
-//     TAI chi hien Uđo1/Uđo2/Rtd, CHUA hien thi gia tri Rng dang chinh khi
-//     nguoi dung xoay Encoder trong che do edit_mode - nguoi dung se KHONG
-//     THAY duoc phan hoi truc quan luc dang chinh Rng qua man hinh (chi co
-//     the suy ra qua so lan xoay). Day la viec can lam THEM sau, tach rieng
-//     khoi tich hop nay de tranh dua thay doi chua kiem thu ky vao module
-//     OLED da on dinh (156/156 test PASS). ***
+// *** NOI DUNG HIEN THI OLED (4 dong): ***
+//   edit_mode=0 (Normal):
+//     Dong 1: "U1=X.XXXV"
+//     Dong 2: "U2=X.XXXV"
+//     Dong 3: "R=XXXXXXoh"
+//     Dong 4: "Rng=XXXXXoh"
+//   edit_mode=1 (Adjust Rng):
+//     Dong 1: "U1=X.XXXV"  (giữ nguyên - freeze)
+//     Dong 2: "U2=X.XXXV"  (giữ nguyên - freeze)
+//     Dong 3: "R=XXXXXXoh" (giữ nguyên - freeze)
+//     Dong 4: "Nhap Rng=XXXoh" (hien thi Rng dang chinh, co label "Nhập")
 //
-// *** DIEU KIEN TIEN QUYET CAN XAC NHAN TRUOC KHI NAP THU (xem chi tiet
-//     trong tung module con): dia chi I2C ADS1115, gia tri E0_MV/RLM_OHM/
-//     R0_OHM (hieu chuan thuc te), model OLED SSD1306 va COL_OFFSET,
-//     huong xoay CW/CCW cua Encoder.
-//     (Da xac nhan: mach khuech dai vi sai da tru VIN2-VIN1 bang analog
-//     truoc ADS1115, J23-pin1/J30-pin1 noi chung -> chi doc 1 kenh AIN2,
-//     xem relay_pulse_controller.sv.) ***
+// *** KHI EDIT_MODE=1: relay_pulse_controller.enable=~edit_mode=0 ->
+//     pause measurement, tat relay, freeze gia tri hien thi.
+//     Khi thoat edit_mode: resume measurement, chu trinh moi bat dau.
+// ***
 // ============================================================================
 module insulation_monitor_top_v2 #(
     // ---- relay_pulse_controller ----
@@ -122,7 +123,7 @@ module insulation_monitor_top_v2 #(
     ) u_relay (
         .clk          (clk),
         .rst_n        (rst_n_sync),
-        .enable       (1'b1),           // luon chay - khong co che do tam dung nao khac trong he thong chinh
+        .enable       (~edit_mode),       // *** SUA: pause measurement khi edit Rng ***
         .scl          (scl),
         .sda_oe       (sda_oe),
         .sda_in       (sda_in),
@@ -199,6 +200,8 @@ module insulation_monitor_top_v2 #(
         .u1_mv      (udo1_mv),
         .u2_mv      (udo2_mv),
         .rtd_ohm    (rtd_ohm),
+        .rng_ohm    (rng_ohm),       // *** MO RONG: gui Rng cho OLED ***
+        .edit_mode  (edit_mode),     // *** MO RONG: gui trang thai edit ***
         .data_valid (result_valid),
         .spi_sclk   (spi_sclk),
         .spi_mosi   (spi_mosi),
