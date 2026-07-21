@@ -51,7 +51,7 @@ module relay_pulse_controller #(
     output logic                result_valid,   // xung: co ket qua moi
     output logic                fault
 );
-    localparam logic [1:0] CH_MEASURE = 2'd2;   // AIN2 - kenh do duy nhat
+    localparam logic [1:0] CH_MEASURE = 2'd0;   // AIN2 - kenh do duy nhat
                                                   // (AIN3 khong con can doc, vi
                                                   //  J23-pin1/J30-pin1 da noi
                                                   //  chung, AIN2=AIN3 luon)
