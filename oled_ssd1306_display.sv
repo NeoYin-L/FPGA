@@ -1,41 +1,28 @@
 // ============================================================================
 // oled_ssd1306_display.sv  -  Dieu khien man OLED 0.96" SSD1306 qua SPI
 //
-// Chuc nang: hien thi Uđo1, Uđo2 (mV, co dau) va Rtd (Ohm, khong dau) len 3
+// Chuc nang: hien thi Uđo1, Uđo2 (mV, co dau), Rtd (Ohm) va Rng (Ohm) len 4
 // dong van ban tren man 128x64. Dinh dang:
 //   Dong 1: "U1=" [dau] X.XXX "V"   (vd "U1=1.523V")
 //   Dong 2: "U2=" [dau] X.XXX "V"
 //   Dong 3: "R="  XXXXXX "oh"        (vd "R=120002oh")
+//   Dong 4: "Rng=" XXXXX "oh"        (vd "Rng=100000oh")
+//            hoac "Nhap Rng=" XXX "oh" khi edit_mode=1
 //
 // *** GHI CHU THIET KE ***
 // - Font 5x7 chi ho tro tap ky tu can thiet (xem font5x7_rom.sv).
-// - Rtd hien thi CO SO 0 O DAU (khong tu dong an so 0 dau) - gioi han tham
-//   my da biet, don gian hoa thiet ke.
-// - KHONG dung framebuffer BRAM day du: vi 3 dong van ban CO VI TRI CO DINH,
+// - Rtd/Rng hien thi CO SO 0 O DAU - don gian hoa thiet ke.
+// - KHONG dung framebuffer BRAM day du: vi 4 dong van ban CO VI TRI CO DINH,
 //   gia tri diem anh duoc TINH TO HOP truc tiep tu line_text + ROM font
-//   ngay trong luc dang truyen SPI - don gian hon nhieu so voi framebuffer.
-// - Chuyen doi BCD + dung van ban va qua trinh quet SPI la TUAN TU trong
-//   CUNG 1 FSM (khong chay song song) - don gian hoa dieu khien; 1 lan quet
-//   bi tam dừng vai chuc chu ky khi co du lieu moi, khong dang ke so voi
-//   thoi gian 1 lan quet day du.
-// - CS giu THAP LIEN TUC tu luc bat dau gui lenh khoi tao (chi 1 slave SPI
-//   duy nhat, khong tranh chap bus).
-// - Trinh tu khoi tao la trinh tu CHUAN cua SSD1306 (cong khai trong
-//   datasheet va vo so thu vien nguon mo).
+//   ngay trong luc dang truyen SPI.
+// - Chuyen doi BCD + van ban + quet SPI la TUAN TU trong CUNG 1 FSM.
+// - CS giu THAP LIEN TUC (chi 1 slave SPI, ko tranh chap bus).
+// - Trinh tu khoi tao la trinh tu CHUAN cua SSD1306 (datasheet).
 // ============================================================================
 module oled_ssd1306_display #(
     parameter int SPI_CLK_DIV       = 4,
     parameter int RESET_LOW_CYCLES  = 270,    // ~10us @27MHz
     parameter int RESET_WAIT_CYCLES = 2700,   // ~100us @27MHz
-    // *** Nhieu module OLED SSD1306 128x64 co IC dieu khien voi RAM noi bo
-    //     RONG 132 COT, nhung mat kinh CHI NOI VOI 128 COT O GIUA (bat dau
-    //     tu cot thu 2 cua RAM, khong phai cot 0). Neu khong bu tru, toan
-    //     bo noi dung bi LECH TRAI 2 COT: 2 cot dau bi mat (ngoai vung hien
-    //     thi), va 2 cot RAM chua tung ghi du lieu lai lot vao ria phai
-    //     (hien thi rac/nhieu ngau nhien vi RAM chua khoi tao).
-    //     COL_OFFSET=2 la gia tri PHO BIEN NHAT cho module 128x64 SSD1306 -
-    //     neu man hinh van lech/rac sau khi dat =2, thu doi sang 0 (mot so
-    //     module khong can bu) hoac gia tri khac theo datasheet module ***
     parameter int COL_OFFSET        = 2
 ) (
     input  logic clk,
@@ -44,7 +31,9 @@ module oled_ssd1306_display #(
     input  logic signed [15:0] u1_mv,
     input  logic signed [15:0] u2_mv,
     input  logic [31:0]        rtd_ohm,
-    input  logic                data_valid,
+    input  logic [31:0]        rng_ohm,     // *** MO RONG: nhap gia tri Rng ***
+    input  logic               edit_mode,    // *** MO RONG: trang thai chinh Rng ***
+    input  logic               data_valid,
 
     output logic spi_sclk,
     output logic spi_mosi,
@@ -77,16 +66,16 @@ module oled_ssd1306_display #(
     );
 
     // ------------------------------------------------------------------
-    // 3 bo chuyen doi BCD rieng
+    // 4 bo chuyen doi BCD rieng (them BCD cho Rng)
     // ------------------------------------------------------------------
     logic        bcd_start;
-    logic        bcd_u1_done, bcd_u2_done, bcd_rtd_done;
-    logic [39:0] bcd_u1_out, bcd_u2_out, bcd_rtd_out;
+    logic        bcd_u1_done, bcd_u2_done, bcd_rtd_done, bcd_rng_done;
+    logic [39:0] bcd_u1_out, bcd_u2_out, bcd_rtd_out, bcd_rng_out;
 
     logic signed [15:0] u1_latched, u2_latched;
-    logic        sign_u1, sign_u2;
-    logic [31:0] mag_u1_32, mag_u2_32;
-    logic [31:0] rtd_latched;
+    logic               sign_u1, sign_u2;
+    logic [31:0]        mag_u1_32, mag_u2_32;
+    logic [31:0]        rtd_latched, rng_latched;
 
     assign sign_u1   = u1_latched[15];
     assign sign_u2   = u2_latched[15];
@@ -94,24 +83,30 @@ module oled_ssd1306_display #(
     assign mag_u2_32 = {16'b0, (sign_u2 ? (-u2_latched) : u2_latched)};
 
     bin2bcd #(.BIN_WIDTH(32), .NUM_DIGITS(10)) u_bcd_u1 (
-        .clk (clk), .rst_n (rst_n), .start (bcd_start), .bin_in (mag_u1_32),
-        .busy (), .done (bcd_u1_done), .bcd_out (bcd_u1_out)
+        .clk(clk), .rst_n(rst_n), .start(bcd_start), .bin_in(mag_u1_32),
+        .busy(), .done(bcd_u1_done), .bcd_out(bcd_u1_out)
     );
     bin2bcd #(.BIN_WIDTH(32), .NUM_DIGITS(10)) u_bcd_u2 (
-        .clk (clk), .rst_n (rst_n), .start (bcd_start), .bin_in (mag_u2_32),
-        .busy (), .done (bcd_u2_done), .bcd_out (bcd_u2_out)
+        .clk(clk), .rst_n(rst_n), .start(bcd_start), .bin_in(mag_u2_32),
+        .busy(), .done(bcd_u2_done), .bcd_out(bcd_u2_out)
     );
     bin2bcd #(.BIN_WIDTH(32), .NUM_DIGITS(10)) u_bcd_rtd (
-        .clk (clk), .rst_n (rst_n), .start (bcd_start), .bin_in (rtd_latched),
-        .busy (), .done (bcd_rtd_done), .bcd_out (bcd_rtd_out)
+        .clk(clk), .rst_n(rst_n), .start(bcd_start), .bin_in(rtd_latched),
+        .busy(), .done(bcd_rtd_done), .bcd_out(bcd_rtd_out)
+    );
+    bin2bcd #(.BIN_WIDTH(32), .NUM_DIGITS(10)) u_bcd_rng (
+        .clk(clk), .rst_n(rst_n), .start(bcd_start), .bin_in(rng_latched),
+        .busy(), .done(bcd_rng_done), .bcd_out(bcd_rng_out)
     );
 
-    wire bcd_all_done = bcd_u1_done && bcd_u2_done && bcd_rtd_done;
+    wire bcd_all_done = bcd_u1_done && bcd_u2_done && bcd_rtd_done && bcd_rng_done;
 
     // ------------------------------------------------------------------
-    // Bang van ban 3 dong (moi dong 16 ky tu = 128 bit dong goi)
+    // Bang van ban 4 dong (moi dong 16 ky tu = 128 bit)
+    // Page mapping: page 0 -> line 0 (U1), page 2 -> line 1 (U2),
+    //                page 4 -> line 2 (Rtd), page 6 -> line 3 (Rng)
     // ------------------------------------------------------------------
-    logic [LINE_CHARS*8-1:0] line_text [3];
+    logic [LINE_CHARS*8-1:0] line_text [4];
 
     function automatic logic [7:0] ascii_digit(input logic [3:0] d);
         ascii_digit = 8'h30 + {4'b0, d};
@@ -139,7 +134,7 @@ module oled_ssd1306_display #(
     end
 
     // ------------------------------------------------------------------
-    // FSM chinh - CHI chua trang thai va thanh ghi (khong tinh to hop o day)
+    // FSM chinh
     // ------------------------------------------------------------------
     typedef enum logic [4:0] {
         S_RESET_LOW, S_RESET_HIGH,
@@ -163,23 +158,23 @@ module oled_ssd1306_display #(
     logic        pending_refresh;
 
     // ------------------------------------------------------------------
-    // TO HOP: xac dinh dong van ban tuong ung voi trang hien tai (chi
-    // trang 0,3,6 la co van ban; cac trang khac de trong)
+    // TO HOP: xac dinh dong van ban tuong ung voi trang hien tai
+    // (page 0->line0, page 2->line1, page 4->line2, page 6->line3)
     // ------------------------------------------------------------------
     logic       page_has_text;
     logic [1:0] line_num;
     always_comb begin
         case (page_idx)
             4'd0:    begin page_has_text = 1'b1; line_num = 2'd0; end
-            4'd3:    begin page_has_text = 1'b1; line_num = 2'd1; end
-            4'd6:    begin page_has_text = 1'b1; line_num = 2'd2; end
+            4'd2:    begin page_has_text = 1'b1; line_num = 2'd1; end
+            4'd4:    begin page_has_text = 1'b1; line_num = 2'd2; end
+            4'd6:    begin page_has_text = 1'b1; line_num = 2'd3; end
             default: begin page_has_text = 1'b0; line_num = 2'd0; end
         endcase
     end
 
     // ------------------------------------------------------------------
-    // TO HOP: ROM font - dia chi lay tu trang thai thanh ghi HIEN TAI
-    // (page_idx/char_idx/sub_col da on dinh truoc khi vao S_PAGE_DATA)
+    // TO HOP: ROM font
     // ------------------------------------------------------------------
     logic [7:0] font_char_code;
     logic [7:0] font_col_data;
@@ -187,13 +182,13 @@ module oled_ssd1306_display #(
     assign font_char_code = page_has_text ? get_char(line_text[line_num], char_idx) : 8'h20;
 
     font5x7_rom u_font (
-        .char_code (font_char_code),
-        .col_idx   (sub_col[2:0]),
-        .col_data  (font_col_data)
+        .char_code(font_char_code),
+        .col_idx(sub_col[2:0]),
+        .col_data(font_col_data)
     );
 
     // ------------------------------------------------------------------
-    // TO HOP: gia tri byte SPI can gui, tuy theo trang thai FSM
+    // TO HOP: gia tri byte SPI can gui
     // ------------------------------------------------------------------
     always_comb begin
         unique case (state)
@@ -209,8 +204,7 @@ module oled_ssd1306_display #(
     end
 
     // ------------------------------------------------------------------
-    // FSM tuan tu: chi chuyen trang thai + cap nhat bo dem, KHONG tinh
-    // spi_tx_byte o day (da tach ra to hop o tren)
+    // FSM tuan tu
     // ------------------------------------------------------------------
     always_ff @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
@@ -229,9 +223,11 @@ module oled_ssd1306_display #(
             u1_latched      <= 16'sd0;
             u2_latched      <= 16'sd0;
             rtd_latched     <= 32'd0;
+            rng_latched     <= 32'd0;      // *** MO RONG: latch Rng ***
             line_text[0]    <= '0;
             line_text[1]    <= '0;
             line_text[2]    <= '0;
+            line_text[3]    <= '0;         // *** MO RONG: dong thu 4 ***
             pending_refresh <= 1'b0;
         end else begin
             spi_start <= 1'b0;
@@ -241,6 +237,7 @@ module oled_ssd1306_display #(
                 u1_latched      <= u1_mv;
                 u2_latched      <= u2_mv;
                 rtd_latched     <= rtd_ohm;
+                rng_latched     <= rng_ohm;    // *** MO RONG: latch Rng ***
                 pending_refresh <= 1'b1;
             end
 
@@ -286,7 +283,11 @@ module oled_ssd1306_display #(
                 end
                 S_CONV_WAIT: if (bcd_all_done) state <= S_COMPOSE;
 
+                // ------------------------------------------------------------------
+                // COMPOSE: to hop noi dung 4 dong van ban
+                // ------------------------------------------------------------------
                 S_COMPOSE: begin
+                    // --- Line 0: U1=X.XXXV ---
                     line_text[0] <= {8'h55, 8'h31, 8'h3D,
                                       (sign_u1 ? 8'h2D : 8'h20),
                                       ascii_digit(bcd_u1_out[15:12]), 8'h2E,
@@ -295,6 +296,8 @@ module oled_ssd1306_display #(
                                       ascii_digit(bcd_u1_out[3:0]),
                                       8'h56,
                                       8'h20, 8'h20, 8'h20, 8'h20, 8'h20, 8'h20};
+
+                    // --- Line 1: U2=X.XXXV ---
                     line_text[1] <= {8'h55, 8'h32, 8'h3D,
                                       (sign_u2 ? 8'h2D : 8'h20),
                                       ascii_digit(bcd_u2_out[15:12]), 8'h2E,
@@ -303,6 +306,8 @@ module oled_ssd1306_display #(
                                       ascii_digit(bcd_u2_out[3:0]),
                                       8'h56,
                                       8'h20, 8'h20, 8'h20, 8'h20, 8'h20, 8'h20};
+
+                    // --- Line 2: R=XXXXXXoh ---
                     line_text[2] <= {8'h52, 8'h3D,
                                       ascii_digit(bcd_rtd_out[23:20]),
                                       ascii_digit(bcd_rtd_out[19:16]),
@@ -312,8 +317,33 @@ module oled_ssd1306_display #(
                                       ascii_digit(bcd_rtd_out[3:0]),
                                       8'h6F, 8'h68,
                                       8'h20, 8'h20, 8'h20, 8'h20, 8'h20, 8'h20};
-                    page_idx <= 4'd0;
-                    state    <= S_PAGE_CMD1;
+
+                    // --- Line 3: Rng=XXXXXoh (edit_mode=0) hoac Nhap Rng=XXXoh (edit_mode=1) ---
+                    if (edit_mode) begin
+                        // "Nhập Rng=XXX______" = 16 ky tu
+                        // N  h  a  p     R  n  g  =  XX X  _  _  _  _  _
+                        line_text[3] <= {8'h4E, 8'h68, 8'h61, 8'h70, 8'h20,
+                                         8'h52, 8'h6E, 8'h67, 8'h3D,
+                                         ascii_digit(bcd_rng_out[23:20]),
+                                         ascii_digit(bcd_rng_out[19:16]),
+                                         ascii_digit(bcd_rng_out[15:12]),
+                                         8'h20, 8'h20, 8'h20, 8'h20};
+                    end else begin
+                        // "Rng=XXXXXoh___" = 16 ky tu
+                        // R  n  g  =  XX XX X  o  h  _  _  _  _  _  _
+                        line_text[3] <= {8'h52, 8'h6E, 8'h67, 8'h3D,
+                                         ascii_digit(bcd_rng_out[23:20]),
+                                         ascii_digit(bcd_rng_out[19:16]),
+                                         ascii_digit(bcd_rng_out[15:12]),
+                                         ascii_digit(bcd_rng_out[11:8]),
+                                         ascii_digit(bcd_rng_out[7:4]),
+                                         ascii_digit(bcd_rng_out[3:0]),
+                                         8'h6F, 8'h68,
+                                         8'h20, 8'h20, 8'h20, 8'h20, 8'h20, 8'h20};
+                    end
+
+                    page_idx  <= 4'd0;
+                    state     <= S_PAGE_CMD1;
                 end
 
                 S_PAGE_CMD1: begin
