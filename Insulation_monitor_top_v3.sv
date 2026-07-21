@@ -32,7 +32,7 @@ module insulation_monitor_top_v2 #(
     // ---- relay_pulse_controller ----
     parameter int TWO_SEC_CYCLES     = 54_000_000,  // 2 giay @ 27MHz
     parameter int AVG_SAMPLES        = 8,
-    parameter int E0_MV              = 50_000,       // *** CAN HIEU CHUAN ***
+    parameter int E0_MV              = 50_000_000,       // *** CAN HIEU CHUAN ***
     parameter int RLM_OHM            = 100_000,
     parameter int R0_OHM             = 1_000,
     parameter logic [6:0] I2C_ADDR   = 7'h48,
@@ -157,8 +157,6 @@ module insulation_monitor_top_v2 #(
     // ------------------------------------------------------------------
     // Module 3: Rng Threshold Editor
     // ------------------------------------------------------------------
-    logic        edit_mode;
-    logic [31:0] rng_ohm;
 
     rng_threshold_editor #(
         .RNG_DEFAULT (RNG_DEFAULT),
